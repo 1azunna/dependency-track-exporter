@@ -2,15 +2,18 @@ package exporter
 
 import (
 	"context"
-	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
+	"sync"
+	"time"
 
 	dtrack "github.com/DependencyTrack/client-go"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/version"
 )
 
 const (
@@ -20,24 +23,24 @@ const (
 
 // Exporter exports metrics from a Dependency-Track server
 type Exporter struct {
-	Client *dtrack.Client
-	Logger log.Logger
+	Client         *dtrack.Client
+	Logger         log.Logger
+	ProjectTags    []string
+	ProjectVersion *regexp.Regexp
+
+	mutex    sync.RWMutex
+	registry *prometheus.Registry
 }
 
 // HandlerFunc handles requests to /metrics
 func (e *Exporter) HandlerFunc() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		registry := prometheus.NewRegistry()
+		e.mutex.RLock()
+		registry := e.registry
+		e.mutex.RUnlock()
 
-		if err := e.collectPortfolioMetrics(r.Context(), registry); err != nil {
-			level.Error(e.Logger).Log("err", err)
-			http.Error(w, fmt.Sprintf("error: %s", err), http.StatusInternalServerError)
-			return
-		}
-
-		if err := e.collectProjectMetrics(r.Context(), registry); err != nil {
-			level.Error(e.Logger).Log("err", err)
-			http.Error(w, fmt.Sprintf("error: %s", err), http.StatusInternalServerError)
+		if registry == nil {
+			http.Error(w, "Exporter not yet initialized", http.StatusServiceUnavailable)
 			return
 		}
 
@@ -45,6 +48,46 @@ func (e *Exporter) HandlerFunc() http.HandlerFunc {
 		h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 		h.ServeHTTP(w, r)
 	}
+}
+
+// Run starts the background polling of Dependency-Track metrics
+func (e *Exporter) Run(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	level.Info(e.Logger).Log("msg", "Starting background poller", "interval", interval)
+
+	// Initial poll
+	e.poll(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			level.Info(e.Logger).Log("msg", "Stopping background poller")
+			return
+		case <-ticker.C:
+			e.poll(ctx)
+		}
+	}
+}
+
+func (e *Exporter) poll(ctx context.Context) {
+	level.Debug(e.Logger).Log("msg", "Polling Dependency-Track metrics")
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(version.NewCollector(Namespace + "_exporter"))
+
+	if err := e.collectPortfolioMetrics(ctx, registry); err != nil {
+		level.Error(e.Logger).Log("msg", "Error collecting portfolio metrics", "err", err)
+	}
+
+	if err := e.collectProjectMetrics(ctx, registry); err != nil {
+		level.Error(e.Logger).Log("msg", "Error collecting project metrics", "err", err)
+	}
+
+	e.mutex.Lock()
+	e.registry = registry
+	e.mutex.Unlock()
+	level.Debug(e.Logger).Log("msg", "Successfully updated metrics cache")
 }
 
 func (e *Exporter) collectPortfolioMetrics(ctx context.Context, registry *prometheus.Registry) error {
@@ -192,7 +235,13 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 		return err
 	}
 
+	matchedProjects := make(map[string]struct{})
 	for _, project := range projects {
+		if !e.projectMatches(project) {
+			continue
+		}
+		matchedProjects[project.UUID.String()] = struct{}{}
+
 		projTags := ","
 		for _, t := range project.Tags {
 			projTags = projTags + t.Name + ","
@@ -269,6 +318,9 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 	}
 
 	for _, violation := range violations {
+		if _, ok := matchedProjects[violation.Project.UUID.String()]; !ok {
+			continue
+		}
 		var (
 			analysisState string
 			suppressed    string = "false"
@@ -301,4 +353,34 @@ func (e *Exporter) fetchPolicyViolations(ctx context.Context) ([]dtrack.PolicyVi
 	return dtrack.FetchAll(func(po dtrack.PageOptions) (dtrack.Page[dtrack.PolicyViolation], error) {
 		return e.Client.PolicyViolation.GetAll(ctx, true, po)
 	})
+}
+
+func (e *Exporter) projectMatches(project dtrack.Project) bool {
+	// Filter by tags
+	if len(e.ProjectTags) > 0 {
+		found := false
+		for _, t := range project.Tags {
+			for _, filterTag := range e.ProjectTags {
+				if t.Name == filterTag {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Filter by version
+	if e.ProjectVersion != nil {
+		if !e.ProjectVersion.MatchString(project.Version) {
+			return false
+		}
+	}
+
+	return true
 }

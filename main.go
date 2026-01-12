@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"strings"
 	"syscall"
 
 	dtrack "github.com/DependencyTrack/client-go"
@@ -30,11 +33,14 @@ func init() {
 
 func main() {
 	var (
-		webConfig     = webflag.AddFlags(kingpin.CommandLine, ":9916")
-		metricsPath   = kingpin.Flag("web.metrics-path", "Path under which to expose metrics").Default("/metrics").String()
-		dtAddress     = kingpin.Flag("dtrack.address", fmt.Sprintf("Dependency-Track server address (can also be set with $%s)", envAddress)).Default("http://localhost:8080").Envar(envAddress).String()
-		dtAPIKey      = kingpin.Flag("dtrack.api-key", fmt.Sprintf("Dependency-Track API key (can also be set with $%s)", envAPIKey)).Envar(envAPIKey).Required().String()
-		promlogConfig = promlog.Config{}
+		webConfig        = webflag.AddFlags(kingpin.CommandLine, ":9916")
+		metricsPath      = kingpin.Flag("web.metrics-path", "Path under which to expose metrics").Default("/metrics").String()
+		dtAddress        = kingpin.Flag("dtrack.address", fmt.Sprintf("Dependency-Track server address (can also be set with $%s)", envAddress)).Default("http://localhost:8080").Envar(envAddress).String()
+		dtAPIKey         = kingpin.Flag("dtrack.api-key", fmt.Sprintf("Dependency-Track API key (can also be set with $%s)", envAPIKey)).Envar(envAPIKey).Required().String()
+		dtProjectTags    = kingpin.Flag("dtrack.project-tags", "Comma-separated list of project tags to filter on").String()
+		dtProjectVersion = kingpin.Flag("dtrack.project-version-regex", "Regex to filter project versions").String()
+		pollInterval     = kingpin.Flag("dtrack.poll-interval", "Interval to poll Dependency-Track for metrics").Default("6h").Duration()
+		promlogConfig    = promlog.Config{}
 	)
 
 	flag.AddFlags(kingpin.CommandLine, &promlogConfig)
@@ -53,10 +59,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	e := exporter.Exporter{
-		Client: c,
-		Logger: logger,
+	var projectVersion *regexp.Regexp
+	if *dtProjectVersion != "" {
+		projectVersion, err = regexp.Compile(*dtProjectVersion)
+		if err != nil {
+			level.Error(logger).Log("msg", "Error compiling project version regex", "err", err)
+			os.Exit(1)
+		}
 	}
+
+	var projectTags []string
+	if *dtProjectTags != "" {
+		projectTags = strings.Split(*dtProjectTags, ",")
+	}
+
+	e := exporter.Exporter{
+		Client:         c,
+		Logger:         logger,
+		ProjectTags:    projectTags,
+		ProjectVersion: projectVersion,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go e.Run(ctx, *pollInterval)
 
 	http.HandleFunc(*metricsPath, e.HandlerFunc())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

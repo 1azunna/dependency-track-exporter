@@ -14,10 +14,16 @@ Flags:
                             Address to listen on for web interface and telemetry.
       --web.metrics-path="/metrics"
                             Path under which to expose metrics
-      --dtrack.address=DTRACK.ADDRESS
-                            Dependency-Track server address (default: http://localhost:8080 or $DEPENDENCY_TRACK_ADDR)
+      --dtrack.address="http://localhost:8080"
+                            Dependency-Track server address (can also be set with $DEPENDENCY_TRACK_ADDR)
       --dtrack.api-key=DTRACK.API-KEY
-                            Dependency-Track API key (default: $DEPENDENCY_TRACK_API_KEY)
+                            Dependency-Track API key (can also be set with $DEPENDENCY_TRACK_API_KEY)
+      --dtrack.project-tags=DTRACK.PROJECT-TAGS
+                            Comma-separated list of project tags to filter on
+      --dtrack.project-version-regex=DTRACK.PROJECT-VERSION-REGEX
+                            Regex to filter project versions
+      --dtrack.poll-interval=6h
+                            Interval to poll Dependency-Track for metrics
       --log.level=info      Only log messages with the given severity or above. One of: [debug, info, warn, error]
       --log.format=logfmt   Output format of log messages. One of: [logfmt, json]
       --version             Show application version.
