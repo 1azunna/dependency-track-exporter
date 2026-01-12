@@ -3,7 +3,6 @@ package exporter
 import (
 	"context"
 	"net/http"
-	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -23,10 +22,9 @@ const (
 
 // Exporter exports metrics from a Dependency-Track server
 type Exporter struct {
-	Client         *dtrack.Client
-	Logger         log.Logger
-	ProjectTags    []string
-	ProjectVersion *regexp.Regexp
+	Client      *dtrack.Client
+	Logger      log.Logger
+	ProjectTags []string
 
 	mutex    sync.RWMutex
 	registry *prometheus.Registry
@@ -371,13 +369,6 @@ func (e *Exporter) projectMatches(project dtrack.Project) bool {
 			}
 		}
 		if !found {
-			return false
-		}
-	}
-
-	// Filter by version
-	if e.ProjectVersion != nil {
-		if !e.ProjectVersion.MatchString(project.Version) {
 			return false
 		}
 	}
