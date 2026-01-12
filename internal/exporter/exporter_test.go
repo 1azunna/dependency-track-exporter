@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	dtrack "github.com/DependencyTrack/client-go"
+	"github.com/go-kit/log"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 )
@@ -115,4 +117,118 @@ func TestFetchPolicyViolations_Pagination(t *testing.T) {
 	if diff := cmp.Diff(wantPolicyViolations, gotPolicyViolations); diff != "" {
 		t.Errorf("unexpected policy violations:\n%s", diff)
 	}
+}
+
+func TestProjectMatches(t *testing.T) {
+	tests := []struct {
+		name        string
+		projectTags []string
+		project     dtrack.Project
+		want        bool
+	}{
+		{
+			name:        "no tags configured",
+			projectTags: []string{},
+			project:     dtrack.Project{Name: "test"},
+			want:        true,
+		},
+		{
+			name:        "project has matching tag",
+			projectTags: []string{"prod"},
+			project: dtrack.Project{
+				Name: "test",
+				Tags: []dtrack.Tag{{Name: "prod"}},
+			},
+			want: true,
+		},
+		{
+			name:        "project has multiple tags including matching one",
+			projectTags: []string{"prod"},
+			project: dtrack.Project{
+				Name: "test",
+				Tags: []dtrack.Tag{{Name: "web"}, {Name: "prod"}},
+			},
+			want: true,
+		},
+		{
+			name:        "project does not have matching tag",
+			projectTags: []string{"prod"},
+			project: dtrack.Project{
+				Name: "test",
+				Tags: []dtrack.Tag{{Name: "dev"}},
+			},
+			want: false,
+		},
+		{
+			name:        "project has no tags but filtering enabled",
+			projectTags: []string{"prod"},
+			project: dtrack.Project{
+				Name: "test",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Exporter{
+				ProjectTags: tt.projectTags,
+			}
+			if got := e.projectMatches(tt.project); got != tt.want {
+				t.Errorf("projectMatches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExporter_Run(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Mock Portfolio metrics
+	mux.HandleFunc("/api/v1/metrics/portfolio/latest", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(dtrack.PortfolioMetrics{})
+	})
+
+	// Mock Projects
+	mux.HandleFunc("/api/v1/project", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Total-Count", "0")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]dtrack.Project{})
+	})
+
+	// Mock Violations
+	mux.HandleFunc("/api/v1/violation", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Total-Count", "0")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]dtrack.PolicyViolation{})
+	})
+
+	client, _ := dtrack.NewClient(server.URL)
+	e := &Exporter{
+		Client: client,
+		Logger: log.NewNopLogger(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start exporter in background with short interval
+	go e.Run(ctx, 100*time.Millisecond)
+
+	// Wait for at least one poll to complete
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		e.mutex.RLock()
+		reg := e.registry
+		e.mutex.RUnlock()
+		if reg != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatal("Exporter failed to populate registry in time")
 }
