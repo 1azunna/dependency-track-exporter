@@ -32,13 +32,14 @@ func init() {
 
 func main() {
 	var (
-		webConfig     = webflag.AddFlags(kingpin.CommandLine, ":9916")
-		metricsPath   = kingpin.Flag("web.metrics-path", "Path under which to expose metrics").Default("/metrics").String()
-		dtAddress     = kingpin.Flag("dtrack.address", fmt.Sprintf("Dependency-Track server address (can also be set with $%s)", envAddress)).Default("http://localhost:8080").Envar(envAddress).String()
-		dtAPIKey      = kingpin.Flag("dtrack.api-key", fmt.Sprintf("Dependency-Track API key (can also be set with $%s)", envAPIKey)).Envar(envAPIKey).Required().String()
-		dtProjectTags = kingpin.Flag("dtrack.project-tags", "Comma-separated list of project tags to filter on").String()
-		pollInterval  = kingpin.Flag("dtrack.poll-interval", "Interval to poll Dependency-Track for metrics").Default("6h").Duration()
-		promlogConfig = promlog.Config{}
+		webConfig                    = webflag.AddFlags(kingpin.CommandLine, ":9916")
+		metricsPath                  = kingpin.Flag("web.metrics-path", "Path under which to expose metrics").Default("/metrics").String()
+		dtAddress                    = kingpin.Flag("dtrack.address", fmt.Sprintf("Dependency-Track server address (can also be set with $%s)", envAddress)).Default("http://localhost:8080").Envar(envAddress).String()
+		dtAPIKey                     = kingpin.Flag("dtrack.api-key", fmt.Sprintf("Dependency-Track API key (can also be set with $%s)", envAPIKey)).Envar(envAPIKey).Required().String()
+		dtProjectTags                = kingpin.Flag("dtrack.project-tags", "Comma-separated list of project tags to filter on").String()
+		pollInterval                 = kingpin.Flag("dtrack.poll-interval", "Interval to poll Dependency-Track for metrics").Default("6h").Duration()
+		dtInitializeViolationMetrics = kingpin.Flag("dtrack.initialize-violation-metrics", "Initialize all possible violation metric combinations to 0 (can also be set with $DEPENDENCY_TRACK_INITIALIZE_VIOLATION_METRICS)").Default("true").Envar("DEPENDENCY_TRACK_INITIALIZE_VIOLATION_METRICS").Bool()
+		promlogConfig                = promlog.Config{}
 	)
 
 	flag.AddFlags(kingpin.CommandLine, &promlogConfig)
@@ -63,9 +64,10 @@ func main() {
 	}
 
 	e := exporter.Exporter{
-		Client:      c,
-		Logger:      logger,
-		ProjectTags: projectTags,
+		Client:                     c,
+		Logger:                     logger,
+		ProjectTags:                projectTags,
+		InitializeViolationMetrics: *dtInitializeViolationMetrics,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

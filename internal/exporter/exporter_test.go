@@ -67,6 +67,37 @@ func TestFetchProjects_Pagination(t *testing.T) {
 	}
 }
 
+func TestFetchProjectsByTag_Pagination(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	wantProjects := []dtrack.Project{
+		{UUID: uuid.New(), Name: "prod-project"},
+	}
+
+	mux.HandleFunc("/api/v1/project/tag/prod", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Total-Count", "1")
+		w.Header().Set("Content-type", "application/json")
+		json.NewEncoder(w).Encode(wantProjects)
+	})
+
+	client, _ := dtrack.NewClient(server.URL)
+	e := &Exporter{
+		Client:      client,
+		ProjectTags: []string{"prod"},
+	}
+
+	gotProjects, err := e.fetchProjects(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error fetching projects: %s", err)
+	}
+
+	if diff := cmp.Diff(wantProjects, gotProjects); diff != "" {
+		t.Errorf("unexpected projects:\n%s", diff)
+	}
+}
+
 func TestFetchPolicyViolations_Pagination(t *testing.T) {
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)
@@ -116,68 +147,6 @@ func TestFetchPolicyViolations_Pagination(t *testing.T) {
 
 	if diff := cmp.Diff(wantPolicyViolations, gotPolicyViolations); diff != "" {
 		t.Errorf("unexpected policy violations:\n%s", diff)
-	}
-}
-
-func TestProjectMatches(t *testing.T) {
-	tests := []struct {
-		name        string
-		projectTags []string
-		project     dtrack.Project
-		want        bool
-	}{
-		{
-			name:        "no tags configured",
-			projectTags: []string{},
-			project:     dtrack.Project{Name: "test"},
-			want:        true,
-		},
-		{
-			name:        "project has matching tag",
-			projectTags: []string{"prod"},
-			project: dtrack.Project{
-				Name: "test",
-				Tags: []dtrack.Tag{{Name: "prod"}},
-			},
-			want: true,
-		},
-		{
-			name:        "project has multiple tags including matching one",
-			projectTags: []string{"prod"},
-			project: dtrack.Project{
-				Name: "test",
-				Tags: []dtrack.Tag{{Name: "web"}, {Name: "prod"}},
-			},
-			want: true,
-		},
-		{
-			name:        "project does not have matching tag",
-			projectTags: []string{"prod"},
-			project: dtrack.Project{
-				Name: "test",
-				Tags: []dtrack.Tag{{Name: "dev"}},
-			},
-			want: false,
-		},
-		{
-			name:        "project has no tags but filtering enabled",
-			projectTags: []string{"prod"},
-			project: dtrack.Project{
-				Name: "test",
-			},
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e := &Exporter{
-				ProjectTags: tt.projectTags,
-			}
-			if got := e.projectMatches(tt.project); got != tt.want {
-				t.Errorf("projectMatches() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 

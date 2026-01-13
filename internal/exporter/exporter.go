@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,9 +23,10 @@ const (
 
 // Exporter exports metrics from a Dependency-Track server
 type Exporter struct {
-	Client      *dtrack.Client
-	Logger      log.Logger
-	ProjectTags []string
+	Client                     *dtrack.Client
+	Logger                     log.Logger
+	ProjectTags                []string
+	InitializeViolationMetrics bool
 
 	mutex    sync.RWMutex
 	registry *prometheus.Registry
@@ -228,30 +230,27 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 		inheritedRiskScore,
 	)
 
-	projects, err := e.fetchProjects(ctx)
-	if err != nil {
-		return err
-	}
-
 	matchedProjects := make(map[string]struct{})
-	for _, project := range projects {
-		if !e.projectMatches(project) {
-			continue
-		}
-		matchedProjects[project.UUID.String()] = struct{}{}
 
-		projTags := ","
+	err := e.forEachProject(ctx, func(project dtrack.Project) error {
+		projectUUID := project.UUID.String()
+		matchedProjects[projectUUID] = struct{}{}
+
+		var projTags strings.Builder
+		projTags.WriteByte(',')
 		for _, t := range project.Tags {
-			projTags = projTags + t.Name + ","
+			projTags.WriteString(t.Name)
+			projTags.WriteByte(',')
 		}
-		info.With(prometheus.Labels{
-			"uuid":       project.UUID.String(),
-			"name":       project.Name,
-			"version":    project.Version,
-			"classifier": project.Classifier,
-			"active":     strconv.FormatBool(project.Active),
-			"tags":       projTags,
-		}).Set(1)
+
+		info.WithLabelValues(
+			projectUUID,
+			project.Name,
+			project.Version,
+			project.Classifier,
+			strconv.FormatBool(project.Active),
+			projTags.String(),
+		).Set(1)
 
 		severities := map[string]int{
 			"CRITICAL":   project.Metrics.Critical,
@@ -261,63 +260,62 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 			"UNASSIGNED": project.Metrics.Unassigned,
 		}
 		for severity, v := range severities {
-			vulnerabilities.With(prometheus.Labels{
-				"uuid":     project.UUID.String(),
-				"name":     project.Name,
-				"version":  project.Version,
-				"severity": severity,
-			}).Set(float64(v))
+			vulnerabilities.WithLabelValues(
+				projectUUID,
+				project.Name,
+				project.Version,
+				severity,
+			).Set(float64(v))
 		}
-		lastBOMImport.With(prometheus.Labels{
-			"uuid":    project.UUID.String(),
-			"name":    project.Name,
-			"version": project.Version,
-		}).Set(float64(project.LastBOMImport))
+		lastBOMImport.WithLabelValues(
+			projectUUID,
+			project.Name,
+			project.Version,
+		).Set(float64(project.LastBOMImport))
 
-		inheritedRiskScore.With(prometheus.Labels{
-			"uuid":    project.UUID.String(),
-			"name":    project.Name,
-			"version": project.Version,
-		}).Set(project.Metrics.InheritedRiskScore)
+		inheritedRiskScore.WithLabelValues(
+			projectUUID,
+			project.Name,
+			project.Version,
+		).Set(project.Metrics.InheritedRiskScore)
 
 		// Initialize all the possible violation series with a 0 value so that it
-		// properly records increments from 0 -> 1
-		for _, possibleType := range []string{"LICENSE", "OPERATIONAL", "SECURITY"} {
-			for _, possibleState := range []string{"INFO", "WARN", "FAIL"} {
-				for _, possibleAnalysis := range []dtrack.ViolationAnalysisState{
-					dtrack.ViolationAnalysisStateApproved,
-					dtrack.ViolationAnalysisStateRejected,
-					dtrack.ViolationAnalysisStateNotSet,
-					// If there isn't any analysis for a policy
-					// violation then the value in the UI is
-					// actually empty. So let's represent that in
-					// these metrics as a possible analysis state.
-					"",
-				} {
-					for _, possibleSuppressed := range []string{"true", "false"} {
-						policyViolations.With(prometheus.Labels{
-							"uuid":       project.UUID.String(),
-							"name":       project.Name,
-							"version":    project.Version,
-							"type":       possibleType,
-							"state":      possibleState,
-							"analysis":   string(possibleAnalysis),
-							"suppressed": possibleSuppressed,
-						})
+		// properly records increments from 0 -> 1.
+		// Note: This accounts for 72 series per project.
+		if e.InitializeViolationMetrics {
+			for _, possibleType := range []string{"LICENSE", "OPERATIONAL", "SECURITY"} {
+				for _, possibleState := range []string{"INFO", "WARN", "FAIL"} {
+					for _, possibleAnalysis := range []string{
+						string(dtrack.ViolationAnalysisStateApproved),
+						string(dtrack.ViolationAnalysisStateRejected),
+						string(dtrack.ViolationAnalysisStateNotSet),
+						"",
+					} {
+						for _, possibleSuppressed := range []string{"true", "false"} {
+							policyViolations.WithLabelValues(
+								projectUUID,
+								project.Name,
+								project.Version,
+								possibleType,
+								possibleState,
+								possibleAnalysis,
+								possibleSuppressed,
+							).Set(0)
+						}
 					}
 				}
 			}
 		}
-	}
 
-	violations, err := e.fetchPolicyViolations(ctx)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	for _, violation := range violations {
+	err = e.forEachPolicyViolation(ctx, func(violation dtrack.PolicyViolation) error {
 		if _, ok := matchedProjects[violation.Project.UUID.String()]; !ok {
-			continue
+			return nil
 		}
 		var (
 			analysisState string
@@ -327,51 +325,70 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 			analysisState = string(analysis.State)
 			suppressed = strconv.FormatBool(analysis.Suppressed)
 		}
-		policyViolations.With(prometheus.Labels{
-			"uuid":       violation.Project.UUID.String(),
-			"name":       violation.Project.Name,
-			"version":    violation.Project.Version,
-			"type":       violation.Type,
-			"state":      violation.PolicyCondition.Policy.ViolationState,
-			"analysis":   analysisState,
-			"suppressed": suppressed,
-		}).Inc()
+		policyViolations.WithLabelValues(
+			violation.Project.UUID.String(),
+			violation.Project.Name,
+			violation.Project.Version,
+			violation.Type,
+			violation.PolicyCondition.Policy.ViolationState,
+			analysisState,
+			suppressed,
+		).Inc()
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
+func (e *Exporter) forEachProject(ctx context.Context, fn func(dtrack.Project) error) error {
+	if len(e.ProjectTags) == 0 {
+		return dtrack.ForEach(func(po dtrack.PageOptions) (dtrack.Page[dtrack.Project], error) {
+			return e.Client.Project.GetAll(ctx, po)
+		}, fn)
+	}
+
+	seen := make(map[string]struct{})
+	for _, tag := range e.ProjectTags {
+		err := dtrack.ForEach(func(po dtrack.PageOptions) (dtrack.Page[dtrack.Project], error) {
+			return e.Client.Project.GetAllByTag(ctx, tag, po)
+		}, func(p dtrack.Project) error {
+			id := p.UUID.String()
+			if _, ok := seen[id]; ok {
+				return nil
+			}
+			seen[id] = struct{}{}
+			return fn(p)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Exporter) forEachPolicyViolation(ctx context.Context, fn func(dtrack.PolicyViolation) error) error {
+	return dtrack.ForEach(func(po dtrack.PageOptions) (dtrack.Page[dtrack.PolicyViolation], error) {
+		return e.Client.PolicyViolation.GetAll(ctx, true, po)
+	}, fn)
+}
+
 func (e *Exporter) fetchProjects(ctx context.Context) ([]dtrack.Project, error) {
-	return dtrack.FetchAll(func(po dtrack.PageOptions) (dtrack.Page[dtrack.Project], error) {
-		return e.Client.Project.GetAll(ctx, po)
+	var projects []dtrack.Project
+	err := e.forEachProject(ctx, func(p dtrack.Project) error {
+		projects = append(projects, p)
+		return nil
 	})
+	return projects, err
 }
 
 func (e *Exporter) fetchPolicyViolations(ctx context.Context) ([]dtrack.PolicyViolation, error) {
-	return dtrack.FetchAll(func(po dtrack.PageOptions) (dtrack.Page[dtrack.PolicyViolation], error) {
-		return e.Client.PolicyViolation.GetAll(ctx, true, po)
+	var violations []dtrack.PolicyViolation
+	err := e.forEachPolicyViolation(ctx, func(v dtrack.PolicyViolation) error {
+		violations = append(violations, v)
+		return nil
 	})
-}
-
-func (e *Exporter) projectMatches(project dtrack.Project) bool {
-	// Filter by tags
-	if len(e.ProjectTags) > 0 {
-		found := false
-		for _, t := range project.Tags {
-			for _, filterTag := range e.ProjectTags {
-				if t.Name == filterTag {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return true
+	return violations, err
 }
