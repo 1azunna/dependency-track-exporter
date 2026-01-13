@@ -283,10 +283,10 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 		if e.InitializeViolationMetrics {
 			for _, possibleType := range []string{"LICENSE", "OPERATIONAL", "SECURITY"} {
 				for _, possibleState := range []string{"INFO", "WARN", "FAIL"} {
-					for _, possibleAnalysis := range []string{
-						string(dtrack.ViolationAnalysisStateApproved),
-						string(dtrack.ViolationAnalysisStateRejected),
-						string(dtrack.ViolationAnalysisStateNotSet),
+					for _, possibleAnalysis := range []dtrack.ViolationAnalysisState{
+						dtrack.ViolationAnalysisStateApproved,
+						dtrack.ViolationAnalysisStateRejected,
+						dtrack.ViolationAnalysisStateNotSet,
 						"",
 					} {
 						for _, possibleSuppressed := range []string{"true", "false"} {
@@ -296,7 +296,7 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 								project.Version,
 								possibleType,
 								possibleState,
-								possibleAnalysis,
+								string(possibleAnalysis),
 								possibleSuppressed,
 							).Set(0)
 						}
