@@ -10,10 +10,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/1azunna/dependency-track-exporter/internal/exporter"
 	dtrack "github.com/DependencyTrack/client-go"
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/go-kit/log/level"
-	"github.com/jetstack/dependency-track-exporter/internal/exporter"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/promlog/flag"
