@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -38,7 +39,7 @@ func main() {
 		dtAPIKey                     = kingpin.Flag("dtrack.api-key", fmt.Sprintf("Dependency-Track API key (can also be set with $%s)", envAPIKey)).Envar(envAPIKey).Required().String()
 		dtProjectTags                = kingpin.Flag("dtrack.project-tags", "Comma-separated list of project tags to filter on").String()
 		pollInterval                 = kingpin.Flag("dtrack.poll-interval", "Interval to poll Dependency-Track for metrics").Default("6h").Duration()
-		dtInitializeViolationMetrics = kingpin.Flag("dtrack.initialize-violation-metrics", "Initialize all possible violation metric combinations to 0 (can also be set with $DEPENDENCY_TRACK_INITIALIZE_VIOLATION_METRICS)").Default("true").Envar("DEPENDENCY_TRACK_INITIALIZE_VIOLATION_METRICS").Bool()
+		dtInitializeViolationMetrics = kingpin.Flag("dtrack.initialize-violation-metrics", "Initialize all possible violation metric combinations to 0").Default("true").String()
 		promlogConfig                = promlog.Config{}
 	)
 
@@ -63,11 +64,17 @@ func main() {
 		projectTags = strings.Split(*dtProjectTags, ",")
 	}
 
+	initViolationMetrics, err := strconv.ParseBool(*dtInitializeViolationMetrics)
+	if err != nil {
+		level.Error(logger).Log("msg", "Error parsing dtrack.initialize-violation-metrics", "err", err)
+		os.Exit(1)
+	}
+
 	e := exporter.Exporter{
 		Client:                     c,
 		Logger:                     logger,
 		ProjectTags:                projectTags,
-		InitializeViolationMetrics: *dtInitializeViolationMetrics,
+		InitializeViolationMetrics: initViolationMetrics,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

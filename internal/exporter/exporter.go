@@ -236,11 +236,9 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 		projectUUID := project.UUID.String()
 		matchedProjects[projectUUID] = struct{}{}
 
-		var projTags strings.Builder
-		projTags.WriteByte(',')
+		var tags []string
 		for _, t := range project.Tags {
-			projTags.WriteString(t.Name)
-			projTags.WriteByte(',')
+			tags = append(tags, t.Name)
 		}
 
 		info.WithLabelValues(
@@ -249,7 +247,7 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 			project.Version,
 			project.Classifier,
 			strconv.FormatBool(project.Active),
-			projTags.String(),
+			strings.Join(tags, ","),
 		).Set(1)
 
 		severities := map[string]int{
