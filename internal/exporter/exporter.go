@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,11 +10,9 @@ import (
 	"time"
 
 	dtrack "github.com/DependencyTrack/client-go"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/version"
 )
 
 const (
@@ -24,7 +23,7 @@ const (
 // Exporter exports metrics from a Dependency-Track server
 type Exporter struct {
 	Client                     *dtrack.Client
-	Logger                     log.Logger
+	Logger                     *slog.Logger
 	ProjectTags                []string
 	InitializeViolationMetrics bool
 
@@ -55,7 +54,7 @@ func (e *Exporter) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	level.Info(e.Logger).Log("msg", "Starting background poller", "interval", interval)
+	e.Logger.Info("Starting background poller", "interval", interval)
 
 	// Initial poll
 	e.poll(ctx)
@@ -63,7 +62,7 @@ func (e *Exporter) Run(ctx context.Context, interval time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
-			level.Info(e.Logger).Log("msg", "Stopping background poller")
+			e.Logger.Info("Stopping background poller")
 			return
 		case <-ticker.C:
 			e.poll(ctx)
@@ -72,22 +71,22 @@ func (e *Exporter) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (e *Exporter) poll(ctx context.Context) {
-	level.Debug(e.Logger).Log("msg", "Polling Dependency-Track metrics")
+	e.Logger.Debug("Polling Dependency-Track metrics")
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(version.NewCollector(Namespace + "_exporter"))
+	registry.MustRegister(collectors.NewBuildInfoCollector())
 
 	if err := e.collectPortfolioMetrics(ctx, registry); err != nil {
-		level.Error(e.Logger).Log("msg", "Error collecting portfolio metrics", "err", err)
+		e.Logger.Error("Error collecting portfolio metrics", "err", err)
 	}
 
 	if err := e.collectProjectMetrics(ctx, registry); err != nil {
-		level.Error(e.Logger).Log("msg", "Error collecting project metrics", "err", err)
+		e.Logger.Error("Error collecting project metrics", "err", err)
 	}
 
 	e.mutex.Lock()
 	e.registry = registry
 	e.mutex.Unlock()
-	level.Debug(e.Logger).Log("msg", "Successfully updated metrics cache")
+	e.Logger.Debug("Successfully updated metrics cache")
 }
 
 func (e *Exporter) collectPortfolioMetrics(ctx context.Context, registry *prometheus.Registry) error {
@@ -328,7 +327,7 @@ func (e *Exporter) collectProjectMetrics(ctx context.Context, registry *promethe
 			violation.Project.Name,
 			violation.Project.Version,
 			violation.Type,
-			violation.PolicyCondition.Policy.ViolationState,
+			string(violation.PolicyCondition.Policy.ViolationState),
 			analysisState,
 			suppressed,
 		).Inc()
@@ -351,7 +350,7 @@ func (e *Exporter) forEachProject(ctx context.Context, fn func(dtrack.Project) e
 	seen := make(map[string]struct{})
 	for _, tag := range e.ProjectTags {
 		err := dtrack.ForEach(func(po dtrack.PageOptions) (dtrack.Page[dtrack.Project], error) {
-			return e.Client.Project.GetAllByTag(ctx, tag, po)
+			return e.Client.Project.GetAllByTag(ctx, tag, false, false, po)
 		}, func(p dtrack.Project) error {
 			id := p.UUID.String()
 			if _, ok := seen[id]; ok {

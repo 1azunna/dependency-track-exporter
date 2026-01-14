@@ -13,10 +13,10 @@ import (
 	"github.com/1azunna/dependency-track-exporter/internal/exporter"
 	dtrack "github.com/DependencyTrack/client-go"
 	"github.com/alecthomas/kingpin/v2"
-	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/promlog"
-	"github.com/prometheus/common/promlog/flag"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/common/promslog"
+	"github.com/prometheus/common/promslog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
@@ -28,7 +28,7 @@ const (
 )
 
 func init() {
-	prometheus.MustRegister(version.NewCollector(exporter.Namespace + "_exporter"))
+	prometheus.MustRegister(collectors.NewBuildInfoCollector())
 }
 
 func main() {
@@ -40,22 +40,21 @@ func main() {
 		dtProjectTags                = kingpin.Flag("dtrack.project-tags", "Comma-separated list of project tags to filter on").String()
 		pollInterval                 = kingpin.Flag("dtrack.poll-interval", "Interval to poll Dependency-Track for metrics").Default("6h").Duration()
 		dtInitializeViolationMetrics = kingpin.Flag("dtrack.initialize-violation-metrics", "Initialize all possible violation metric combinations to 0").Default("true").String()
-		promlogConfig                = promlog.Config{}
+		promslogConfig               = promslog.Config{}
 	)
 
-	flag.AddFlags(kingpin.CommandLine, &promlogConfig)
+	flag.AddFlags(kingpin.CommandLine, &promslogConfig)
 	kingpin.Version(version.Print(exporter.Namespace + "_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	logger := promlog.New(&promlogConfig)
+	logger := promslog.New(&promslogConfig)
 
-	level.Info(logger).Log("msg", fmt.Sprintf("Starting %s_exporter %s", exporter.Namespace, version.Info()))
-	level.Info(logger).Log("msg", fmt.Sprintf("Build context %s", version.BuildContext()))
+	logger.Info("Starting exporter", "namespace", exporter.Namespace, "version", version.Info(), "build_context", version.BuildContext())
 
 	c, err := dtrack.NewClient(*dtAddress, dtrack.WithAPIKey(*dtAPIKey))
 	if err != nil {
-		level.Error(logger).Log("msg", "Error creating client", "err", err)
+		logger.Error("Error creating client", "err", err)
 		os.Exit(1)
 	}
 
@@ -66,7 +65,7 @@ func main() {
 
 	initViolationMetrics, err := strconv.ParseBool(*dtInitializeViolationMetrics)
 	if err != nil {
-		level.Error(logger).Log("msg", "Error parsing dtrack.initialize-violation-metrics", "err", err)
+		logger.Error("Error parsing dtrack.initialize-violation-metrics", "err", err)
 		os.Exit(1)
 	}
 
@@ -100,7 +99,7 @@ func main() {
 	go func() {
 		srv := &http.Server{}
 		if err := web.ListenAndServe(srv, webConfig, logger); err != http.ErrServerClosed {
-			level.Error(logger).Log("msg", "Error starting HTTP server", "err", err)
+			logger.Error("Error starting HTTP server", "err", err)
 			close(srvc)
 		}
 	}()
@@ -108,7 +107,7 @@ func main() {
 	for {
 		select {
 		case <-term:
-			level.Info(logger).Log("msg", "Received SIGTERM, exiting gracefully...")
+			logger.Info("Received SIGTERM, exiting gracefully...")
 			os.Exit(0)
 		case <-srvc:
 			os.Exit(1)

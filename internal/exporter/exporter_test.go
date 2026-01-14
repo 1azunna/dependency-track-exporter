@@ -3,6 +3,8 @@ package exporter
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,7 +12,6 @@ import (
 	"time"
 
 	dtrack "github.com/DependencyTrack/client-go"
-	"github.com/go-kit/log"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 )
@@ -18,6 +19,13 @@ import (
 func TestFetchProjects_Pagination(t *testing.T) {
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Mock version endpoint
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": "4.12.0"})
+	})
 
 	var wantProjects []dtrack.Project
 	for i := 0; i < 468; i++ {
@@ -72,6 +80,12 @@ func TestFetchProjectsByTag_Pagination(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	// Mock version endpoint
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": "4.12.0"})
+	})
+
 	wantProjects := []dtrack.Project{
 		{UUID: uuid.New(), Name: "prod-project"},
 	}
@@ -82,7 +96,10 @@ func TestFetchProjectsByTag_Pagination(t *testing.T) {
 		json.NewEncoder(w).Encode(wantProjects)
 	})
 
-	client, _ := dtrack.NewClient(server.URL)
+	client, err := dtrack.NewClient(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error setting up client: %s", err)
+	}
 	e := &Exporter{
 		Client:      client,
 		ProjectTags: []string{"prod"},
@@ -101,6 +118,13 @@ func TestFetchProjectsByTag_Pagination(t *testing.T) {
 func TestFetchPolicyViolations_Pagination(t *testing.T) {
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Mock version endpoint
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": "4.12.0"})
+	})
 
 	var wantPolicyViolations []dtrack.PolicyViolation
 	for i := 0; i < 468; i++ {
@@ -155,6 +179,12 @@ func TestExporter_Run(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	// Mock version endpoint
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": "4.12.0"})
+	})
+
 	// Mock Portfolio metrics
 	mux.HandleFunc("/api/v1/metrics/portfolio/latest", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -178,7 +208,7 @@ func TestExporter_Run(t *testing.T) {
 	client, _ := dtrack.NewClient(server.URL)
 	e := &Exporter{
 		Client: client,
-		Logger: log.NewNopLogger(),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
